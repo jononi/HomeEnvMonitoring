@@ -9,6 +9,7 @@ Header file with imports and definitions
 */
 
 // #include "HTU21D.h"
+// #include "SparkFunBME280.h"
 #include "Si7021_Particle.h"
 #include "TSL2561.h"
 #include "MAX17043.h"
@@ -21,10 +22,8 @@ Header file with imports and definitions
 #define pirDetectPin A4
 #define pirEnablePin A5
 
-#define sensePeriod   10000  // defines frequency of taking measurements
-#define publishPeriod 25000 //defines frequency of publishing to the cloud (Particle, Ubidots...) in ms (min 1000)
-#define minSleepingDuration 25000
-#define maxAwakeDuration 5000
+#define minSleepingDuration 20000
+#define maxAwakeDuration 10000
 
 // Ubidots cloud services API params
 #define ubiToken "ubiTokenHere"
@@ -43,19 +42,40 @@ Header file with imports and definitions
 // print info to Serial print switch for debug purpose
 // #define serial_debug
 
+// run in threads mode (connectivity and main program are separate threads)
+SYSTEM_MODE(SEMI_AUTOMATIC);
+SYSTEM_THREAD(ENABLED);
+
+// FSM states
+enum State {CONNECT_STATE, AWAKE_STATE, INACTIVE_STATE, SLEEP_STATE };
+State state;
+
+// energy mode variable
+bool save_mode_on = false;
+bool save_mode_switched  = false; // flag indicating a recent change
+
+#ifdef serial_debug
+// SerialLogHandler logHandler(115200, LOG_LEVEL_INFO);
+SerialLogHandler logHandler(115200, LOG_LEVEL_WARN, {
+	{ "app", LOG_LEVEL_INFO },
+	{ "app.custom", LOG_LEVEL_INFO }
+});
+#endif
+
 // sensors objects
 TSL2561 tsl = TSL2561(TSL2561_ADDR);
 // HTU21D htu = HTU21D();
+// BME280 bme;
 Si7021 si7021;
 
 // battery monitor is declared in its header file
 
 // status report and execution control
 // sensors state
-bool tsl_opsOn = false;
-bool ht_opsOn = false;
-bool batt_opsOn = false;
-bool pir_opsOn = false;
+bool tsl_on = false;
+bool ht_on = false;
+bool batt_on = false;
+bool pir_on = false;
 
 // variables to display these settings
 char sensors_status[41];
@@ -63,15 +83,19 @@ char tsl_settings[21];
 char cloud_settings[41];
 
 // timer variables
-uint32_t sendTime;
-uint32_t senseTime;
-uint32_t lastAwakeTime;
+uint32_t lastWakeUpTime;
+uint32_t sleepStartTime_s;
 uint32_t sleepingDuration;
 
-// cloud sending state
-bool particleOn = false;
-bool ubidotsOn = false;
-bool influxdbOn = true;
+// cloud logging switches
+bool particle_on = false;
+bool ubidots_on = false;
+bool influxdb_on = true;
+
+// cloud logging status flags
+bool particle_logged = false;
+bool ubidots_logged = false;
+bool influxdb_logged = false;
 
 // Light sensor settings vars
 uint16_t integrationTime;
@@ -80,19 +104,13 @@ bool autoGainOn;
 // pir vars
 bool pir_calibration_on = false;
 
-// sensors vars
-
-//sensors vars
+// measurements vars
 double illuminance = 0;
-
 double humidity = 0;
 double temperatureC = 0;
-
 double battery_p = 0;
 double voltage = 0;
-bool   low_voltage_alert;
-
-int pir_event_cnt;
+int pir_event_cnt = 0;
 
 // data publishing vars
 char data_c[191];
@@ -121,14 +139,14 @@ int meas_successful=0;
 // http request instance
 HttpClient http;
 
-// ubidots http request header  (validated)
-http_header_t ubiHeaders[] ={
+// ubidots http request header
+/*http_header_t ubiHeaders[] ={
   { "Content-Type", "application/json" },
   { "X-Auth-Token" , ubiToken },
   { NULL, NULL } // NOTE: Always terminate headers with NULL
-};
+};*/
 
-// ubidots http request header  (validated)
+// InfluxDB http request header
 http_header_t influxdb_H[] ={
     { "Accept" , "*/*"},
     { "User-agent", "Particle HttpClient"},
@@ -136,7 +154,7 @@ http_header_t influxdb_H[] ={
 };
 
 // http requests instances
-http_request_t ubidotsRequest;
+// http_request_t ubidotsRequest;
 http_request_t influxdbRequest;
 
 // one http response instance used for both APIs

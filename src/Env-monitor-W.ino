@@ -1,7 +1,13 @@
 /*
-* Home environement monitoring and logging
-* Env-monitor
-Jaafar Ben-Abdallah / May 2017
+* Home environement monitoring and logging: Environment Monitoring for jonoryWave Photon
+* Env-monitor-W
+Jaafar Ben-Abdallah / June '17
+
+TODO:
+
+1- debug PIR usage --> done
+2- replace delay(sensingPeriod) by a sleep of 25 sec or less --> done
+3- create 2 modes: always on and energy saving. Switch between modes using SETUP button --> done
 */
 
 // imports, definitions and global variables go here:
@@ -9,59 +15,68 @@ Jaafar Ben-Abdallah / May 2017
 
 void setup()
 {
-  #ifdef serial_debug
-  delay(3000);
-  Serial.begin(9600);
-  #endif
-
-  // initialize sensors and get status
-
-  // tsl_opsOn = enableTSL();
-  batt_opsOn = enableBatt();
-  ht_opsOn = si7021.begin();
-  pir_opsOn = enablePir();
-
-  // init pir events counter
-  pir_event_cnt = 1;
-
-  sprintf(sensors_status,"Ill: %i, TH: %i, PIR: %i, Batt: %i",tsl_opsOn, ht_opsOn, pir_opsOn, batt_opsOn);
-
-  Particle.publish("EnvW/Status", sensors_status);
-
-  sprintf(cloud_settings,"ubidots: %i, particle: %i, influx: %i", ubidotsOn, particleOn, influxdbOn);
 
   // cloud variables (max 20)
-  // Particle.variable("illuminance", illuminance);
-  Particle.variable("humidity", humidity);
   Particle.variable("temperature", temperatureC);
+  Particle.variable("humidity", humidity);
+  Particle.variable("illuminance", illuminance);
   // Particle.variable("voltage",voltage);
   Particle.variable("percentage",battery_p);
   Particle.variable("sen_status", sensors_status);
   // Particle.variable("tsl_settings", tsl_settings);
-  Particle.variable("pir_status", pir_calibration_on);
+  // Particle.variable("pir_status", pir_calibration_on);
   Particle.variable("pir_counter", pir_event_cnt);
   // Particle.variable("ubi_http_cnt",ubidots_cnt);
   Particle.variable("influx_cnt",influx_cnt);
   Particle.variable("cloud_status",cloud_settings);
 
-  // function on the cloud: change light sensor exposure settings (max 12)
+  // cloud  functions (max 12)
   Particle.function("resetSensors", resetSensors);
   Particle.function("setCloud", setActiveCloud);
   Particle.function("setMeta", setConditions);
   Particle.function("getMeta", getConditions);
+  Particle.function("setEcoMode", setEnergySaving);
+
+  // initiate cloud connection (semi-auto mode)
+  Particle.connect();
+
+  // register an event handler for SETUP button click
+  System.on(button_click, buttonHandler);
+  pinMode(D7, OUTPUT);
+
+  #ifdef serial_debug
+  delay(3000);
+  Log.info("Starting up...");
+  Serial.println("print to serial works too");
+  #endif
+
+  // initialize sensors and get status
+  tsl_on = enableTSL();
+  batt_on = enableBatt();
+  // ht_on = enableBME();
+  ht_on = si7021.begin();
+  pir_on = enablePir();
+  // init pir events counter
+  pir_event_cnt = 0;
+
+  sprintf(sensors_status,"Ill: %i, TH: %i, PIR: %i, Batt: %i",tsl_on, ht_on, pir_on, batt_on);
+  Particle.publish("EnvW/Status", sensors_status);
+
+  sprintf(cloud_settings,"particle: %i, influx: %i", particle_on, influxdb_on);
 
   // ubidots connection params
+  /*
   ubidotsRequest.hostname = "things.ubidots.com";
   ubidotsRequest.port = 80;
   ubidotsRequest.path = "/api/v1.6/collections/values";
+  */
 
-  // ubidots connection params
-  //influxdbRequest.ip = {192,168,1,100};
-  influxdbRequest.hostname = "local-server-url";
+  // InfluxDB server connection params
+  influxdbRequest.hostname = "influxdb_server_url";
   influxdbRequest.port = 8086;
   influxdbRequest.path = "/write?db=dbName&rp=retention-policy-name&precision=s&u=influxusername&p=influxpassword";
 
-  // uncomment next line only when need to reset emulated EEPROM
+  // uncomment next line only when need to reset Emulated EEPROM
   //EEPROM.clear();
 
   // read last used tags value from emulated EEPROM
@@ -72,194 +87,298 @@ void setup()
   strcpy(location, stored_tags.location);
   strcpy(humidifier, stored_tags.humidifier);
 
+  /*
   #ifdef serial_debug
-  Serial.println("Initialization completed");
-  Serial.println(sensors_status);
+  Log.info("Initialization completed");
+  Log.info(sensors_status);
   Serial.printlnf("si7021 id: %d", si7021.checkID());
-  Serial.printlnf("cell gauge id: %d", lipo.getVersion());
+  Serial.printlnf("cell gauge ver: %d", lipo.getVersion());
 
   // get local IP
-  Serial.printlnf("local IP:");
-  Serial.println(WiFi.localIP());
+  Log.info("LocalIP: %s", WiFi.localIP());
+
+  Log.info("resolving rpi1.nrjy.com :");
+  Log.info(WiFi.resolve("rpi1.nrjy.com"));
 
   // get mac address
   byte mac[6];
   WiFi.macAddress(mac);
   for (int i=0; i<6; i++) {
-    if (i) Serial.print(":");
-    Serial.print(mac[i], HEX);
+    if (i) Log.info(":");
+    Log.info(mac[i], HEX);
   }
-  Serial.println();
 
-  Serial.printlnf("free mem= %i",System.freeMemory());
+  Log.info("free memory= %i",System.freeMemory());
 
-  Serial.print("location from E2:");
-  Serial.println(stored_tags.location);
-  Serial.print("humidifier from E2:");
-  Serial.println(stored_tags.humidifier);
-  Serial.print("version from E2:");
-  Serial.println(stored_tags.version);
+  Log.info("location from E2:");
+  Log.info(stored_tags.location);
+  Log.info("humidifier from E2:");
+  Log.info(stored_tags.humidifier);
+  Log.info("version from E2:");
+  Log.info(stored_tags.version);
 
   #endif
+  */
+
+  state = AWAKE_STATE;
 
   // start timers
-  sendTime = millis();
-  senseTime = millis();
-  //
   sleepingDuration = minSleepingDuration;
-  lastAwakeTime = millis();
+  lastWakeUpTime = millis();
 
 }//setup
 
 
 void loop()
 {
-  //if ((millis() - senseTime) > sensePeriod) {
-  if (millis() - lastAwakeTime < maxAwakeDuration) {
-    // get illuminance value if sensor is on
-    if(tsl_opsOn){
-      // get raw data
-      uint16_t _broadband, _ir;
-      if (tsl.getData(_broadband,_ir,autoGainOn)){
-        // now get the illuminance value
-        tsl.getLux(integrationTime,_broadband,_ir,illuminance);
-      }
-      // problem with reading, flag and turn off sensor logical switch
-      else {
-        illuminance = -0.01;
-        sprintf(sensors_status,"EnvW/tsl error:%i",tsl.getError());
-        tsl.setPowerDown();
-        tsl_opsOn = false;
-      }
-      // print current settings to cloud variable
-      printTSLsettings(tsl_settings);
-    }
+  switch(state) {
+		case AWAKE_STATE:
+    // AWAKE state actions
+    readSensors();
 
-    // get T/H values if sensor is operational
-    if (ht_opsOn){
-      // get data
-      double hum = si7021.getRH();
-      double temp = si7021.readTemp();
+    // set logging flags by default if service is disabled
+    if (!particle_on) particle_logged = true;
+    if (!influxdb_on) influxdb_logged = true;
 
-      //check if there  was I2C comm errors
-      if (hum == 0.01) {
-        humidity =  0.01;
-        temperatureC = 0.01;
-        // display error code
-        strcpy(sensors_status,"TH error");
-        // turn off sensor logical switch
-        ht_opsOn = false;
+    // log only when at least one env sensor is enabled
+    if ((tsl_on || ht_on)) {
+      if (particle_on && !particle_logged && Particle.connected()) {
+        Particle.publish("EnvW/data",data_c);
+        delay(200);
+        particle_logged = true;
       }
-      else {
-        humidity =  hum;
-        temperatureC = temp;
+      if (influxdb_on && !influxdb_logged && WiFi.ready()) {
+        sendInfluxdb();
+        // reset PIR events counter if logged to InfluxDB
+        if (pir_event_cnt > 0) pir_event_cnt = 0;
+        influxdb_logged = true;
       }
     }
 
-    // check if PIR calibration phase is over
-    if (pir_calibration_on == true && digitalRead(pirDetectPin) == LOW) {
-      // calibration is over, turn reset flag
-      pir_calibration_on = false;
-      Particle.publish("EnvW/PIR","End Cal");
-      // Particle.publish("EnvD/PIR","End Cal");
+    // AWAKE state transition
+    // awake --> inactive or sleep
+    if (((millis() - lastWakeUpTime) > maxAwakeDuration) || (influxdb_logged && particle_logged)) {
+      if (save_mode_on) state = SLEEP_STATE;
+      else state = INACTIVE_STATE;
+      // reset logging flags
+      particle_logged = false;
+      influxdb_logged = false;
+      // set sleeping duration period (ms)
+      sleepingDuration = minSleepingDuration + maxAwakeDuration - (millis() - lastWakeUpTime);
+      // start sleep state timer (s)
+      sleepStartTime_s = Time.now();
+
+      #ifdef serial_debug
+      Log.info("time spent awake: %i ms", millis() - lastWakeUpTime);
+      Log.info("sleep duration: %i ms", sleepingDuration);
+      Log.info("inactive/sleep start time: %i ", sleepStartTime_s);
+      Log.info("eco mode status: %i",save_mode_on);
+      #endif
+    }
+		break;
+
+    case INACTIVE_STATE:
+    // INACTIVE state actions
+    if (pir_on && !pir_calibration_on && digitalRead(pirDetectPin) == HIGH) {
+      pir_event_cnt ++;
+      delay(3000); // debounce period for PIR sensing (synchronous, non blocking)
+      #ifdef serial_debug
+      Log.info("End of PIR sensor debounce period");
+      #endif
     }
 
-    // check PIR sensor output
-    if (pir_opsOn && !pir_calibration_on) {
-      if (digitalRead(pirDetectPin) == HIGH ){
-        // if there was previous events (>0), increment
-        // else just set it to 1
-        if (pir_event_cnt > 0) pir_event_cnt ++;
-        else pir_event_cnt =1;
+    // INACTIVE state transitions
+    // inactive --> sleep
+    if (save_mode_on) {
+      // power save mode recently requested by setup button click or through Cloud function
+      state = SLEEP_STATE;
+;
+      // adjust remaining sleeping duration
+      sleepingDuration = sleepingDuration - 1000 * (Time.now() - sleepStartTime_s);
 
-        #ifdef serial_debug
-        Serial.printlnf("pir_cnt: %i", pir_event_cnt);
-        #endif
-        // Particle.publish("EnvW/PIR", String(pir_event_cnt));
-      }
+      #ifdef serial_debug
+      Log.info("switch: inactive -> sleep after: %i s", Time.now() - sleepStartTime_s);
+      Log.info("adjusted sleep duration: %i ms", sleepingDuration);
+      #endif
+
+      // adjust starting time for SLEEP state
+      sleepStartTime_s = Time.now();
+    }
+    // inactive --> awake
+    if (1000 * (Time.now() - sleepStartTime_s) >  sleepingDuration ) {
+      state = AWAKE_STATE;
+
+      #ifdef serial_debug
+      Log.info("switch: inactive -> awake after: %i s", Time.now() - sleepStartTime_s);
+      #endif
+
+      lastWakeUpTime = millis();
     }
 
-    // get battery related data. There's no fail recovery option for this sensor yet
-    if (batt_opsOn) {
-      // get battery data
-      voltage = lipo.getVoltage();
-      battery_p = lipo.getSOC();
-      if (battery_p > 100.0) {
-        battery_p = 100.0;
-      }
-      low_voltage_alert = lipo.getAlert();
-      // check sensor status and update logical switch if it's down
-      if (lipo.getVersion() != 3) {
-        batt_opsOn = false;
-      }
-    }
+		break;
 
-    // update sensors status
-    sprintf(sensors_status,"Ill: %i, TH: %i, PIR: %i, Batt: %i",tsl_opsOn, ht_opsOn, pir_opsOn, batt_opsOn);
-
-    // update measurements string
-    sprintf(data_c, "T=%.1f C, RH=%.1f, Ill=%.1f lux, v=%.2f V, soc=%.1f",temperatureC,humidity,illuminance,voltage,battery_p);
-
+    case SLEEP_STATE:
+    // SLEEP state actions
     #ifdef serial_debug
-    Serial.println(sensors_status);
-    Serial.println(data_c);
+    Log.info("Going into STOP mode at: %i s for %i s", Time.now(), sleepingDuration / 1000);
+    delay(10); // allow serial buffer to be emptied
     #endif
 
-    // reset send timer
-    // senseTime = millis();
+    // simulate sleep when uncommented
+    /*
+    Particle.disconnect();
+    WiFi.off();
+    delay(sleepingDuration); // synchronous, blocking PIR event detection
+    WiFi.on();
+    Particle.connect();
+    */
 
-    // send data if cloud connection is established
-    if (Particle.connected()) {
-
-      if ((tsl_opsOn || ht_opsOn)) {
-        if(particleOn) {
-          Particle.publish("EnvW/data",data_c);
-          delay(200); // give sometime for the data to be published
-        }
-        if (ubidotsOn) {
-          sendUbidots2();
-        }
-        if (influxdbOn) {
-          sendInfluxdb();
-        }
-
-        // if pir counts > 0 and it was already logged, reset it
-        if (pir_event_cnt > 0) {
-          pir_event_cnt = 0;
-        }
-      }
-      // set sleepingDuration in the case of successful data sending: min sleeping duration + awake time not used(5s - awakeTime)
-      sleepingDuration = minSleepingDuration + (millis() - lastAwakeTime);
-      // make sure to not come back to this section and start sleep phase ASAP
-      lastAwakeTime = millis() - maxAwakeDuration;
-    } // logging data
-  } // awake mode handling
-  else {
-    // exceeded maxAwakeDuration in awake time: sleepingDuration = 25s or sending happened before maxAwakeDuration: sleepingDuration >= 25s
-    // start sleep phase (stop mode)
-    uint32_t sleepStartTime = millis();
+    // Turn WiFi off so it doesn't reconnect when exiting STOP mode
+    WiFi.off();
+    //Go into STOP mode
     System.sleep(pirDetectPin, RISING, sleepingDuration / 1000);
 
-    // woke up: check what caused it
-    if (millis() - sleepStartTime < sleepingDuration) {
-      // awakening by PIR triggering --> increment PIR event counter
-      pir_event_cnt ++;
-      // update sleeping duration
-      sleepingDuration = sleepingDuration - (millis() - sleepStartTime);
+    #ifdef serial_debug
+    // SerialLogHandler logHandler(115200, LOG_LEVEL_INFO);
+    Serial.begin(115200);
+    Log.info("exited STOP mode after %i s", Time.now() - sleepStartTime_s);
+    #endif
+
+    // if PIR trigger caused wake-up, increment event counter and adjust sleepingDuration
+    if ( (Time.now() - sleepStartTime_s) <  sleepingDuration / 1000 ) {
+      if (digitalRead(pirDetectPin) == HIGH ) {
+        pir_event_cnt++;
+        #ifdef serial_debug
+        Log.info("PIR event counter incremented to: %i", pir_event_cnt);
+        #endif
+      }
+      sleepingDuration = sleepingDuration - 1000 * (Time.now() - sleepStartTime_s);
+      sleepStartTime_s = Time.now();
     }
-    else {
-      // awakening because exceeded sleepingDuration, reset AwakeTime and sleepingDuration
-      sleepingDuration = minSleepingDuration;
-      lastAwakeTime = millis();
+
+    // SLEEP state transitions
+    // sleep --> awake
+    if ( Time.now() - sleepStartTime_s >=  sleepingDuration / 1000) {
+      state = AWAKE_STATE;
+      #ifdef serial_debug
+      Log.info("switch sleep -> awake after: %i s", Time.now() - sleepStartTime_s);
+      #endif
+      // Now is a good time to reconnect
+      // WiFi.on();
+      // Particle.connect();
+      lastWakeUpTime = millis();
     }
-  } // sleep mode handling
-} //loop
+
+		break;
+  }
+
+  // notification for power save mode switch
+  if (save_mode_switched) {
+    save_mode_switched = false;
+    digitalWrite(D7, LOW);
+    blink_on_switch();
+  }
+}
 
 
 /* **********************************************************
 *              Sensors Functions
 *  ********************************************************** */
 
+void readSensors() {
+  // ****************** PIR sensor ******************
+  // check if PIR calibration phase is over
+  if (pir_calibration_on == true && digitalRead(pirDetectPin) == LOW) {
+    // calibration is over
+    pir_calibration_on = false;
+    Particle.publish("EnvW/PIR","End Cal");
+    // Particle.publish("EnvD/PIR","End Cal");
+  }
+  // PIR sensor events are only aggregated in INACTIE or SLEEP modes
+
+  /*
+  if (pir_on && !pir_calibration_on && pir_event_cnt == 0) {
+    if (digitalRead(pirDetectPin) == HIGH ) {
+      // this event was not detected by GPIO interrupt during sleep phase
+      pir_event_cnt = 1;
+      Particle.publish("EnvW/PIR", String(pir_event_cnt));
+      #ifdef serial_debug
+      Log.info("pir_cnt: %i", pir_event_cnt);
+      #endif
+    }
+  }*/
+
+  // ****************** light sensor ******************
+  // get illuminance value if sensor is on
+  if(tsl_on){
+    // get raw data
+    uint16_t _broadband, _ir;
+    if (tsl.getData(_broadband,_ir,autoGainOn)){
+      // now get the illuminance value
+      tsl.getLux(integrationTime,_broadband,_ir,illuminance);
+    }
+    // problem with reading, flag and turn off sensor logical switch
+    else {
+      illuminance = -0.01;
+      sprintf(sensors_status,"EnvW/tsl error:%i",tsl.getError());
+      // sprintf(sensors_status,"EnvD/tsl error:%i",tsl.getError());
+      tsl.setPowerDown();
+      tsl_on = false;
+    }
+    // print current settings to cloud variable
+    printTSLsettings(tsl_settings);
+  }
+
+  // ****************** Temperature + humidity sensor ******************
+  // get T/H values if sensor is on
+  if (ht_on){
+    // get data
+    double hum = si7021.getRH();
+    double temp = si7021.readTemp();
+
+    //check if there  was I2C comm errors
+    if (hum == 0.01) {
+      humidity =  0.01;
+      temperatureC = 0.01;
+      // display error code
+      strcpy(sensors_status,"TH error");
+      // turn off sensor logical switch
+      ht_on = false;
+    }
+    else {
+      humidity =  hum;
+      temperatureC = temp;
+    }
+  }
+
+  // ****************** battery voltage and state of charge sensor ******************
+  // get battery related data. There's no fail recovery option for this sensor yet
+  if (batt_on) {
+    // get battery data
+    voltage = lipo.getVoltage();
+    battery_p = lipo.getSOC();
+    if (battery_p > 100.0) {
+      battery_p = 100.0;
+    }
+    // low_voltage_alert = lipo.getAlert();
+    // check sensor status and update logical switch if it's down
+    if (lipo.getVersion() != 3) {
+      batt_on = false;
+    }
+  }
+
+  // update sensors status
+  sprintf(sensors_status,"Ill: %i, TH: %i, PIR: %i, Batt: %i",tsl_on, ht_on, pir_on, batt_on);
+  // update measurements string
+  sprintf(data_c, "T=%.1f C, RH=%.1f, Ill=%.1f lux, v=%.2f V, soc=%.1f",temperatureC,humidity,illuminance,voltage,battery_p);
+
+  #ifdef serial_debug
+  Log.info(sensors_status);
+  Log.info(data_c);
+  #endif
+}
+
+// ****************** sensors Initialization functions ******************
 
 bool enableTSL(){
 
@@ -312,7 +431,7 @@ bool enablePir() {
   delay(500);
 
   #ifdef serial_debug
-  Serial.printlnf("pirOutPin: %i", digitalRead(pirDetectPin));
+  Log.info("pirOutPin: %i", digitalRead(pirDetectPin));
   #endif
 
   if (digitalRead(pirDetectPin) == HIGH) {
@@ -337,6 +456,32 @@ void printTSLsettings(char *buffer)
 }
 
 /* **********************************************************
+*              Mode control Functions
+*  ********************************************************** */
+
+void buttonHandler(system_event_t event, int data) {
+	//int times = system_button_clicks(data);//put here for reference
+	save_mode_on = !save_mode_on;
+  save_mode_switched = true;
+  // turn on Blue LED on D7 when save_mode_switched is set
+  digitalWrite(D7, HIGH);
+}
+
+void blink_on_switch() {
+	// visual indication on tracking state transition
+	RGB.control(true);
+  if (save_mode_on) RGB.color(51, 255,  51); //lime
+  else RGB.color(255, 49,  0); //orange
+	delay(100);
+	RGB.color(0, 0,  0);
+	delay(70);
+  if (save_mode_on) RGB.color(51, 255,  51); // lime
+  else RGB.color(255, 49,  0); //orange
+  delay(100);
+	RGB.control(false);
+}
+
+/* **********************************************************
 *              Settings Cloud Functions
 *  ********************************************************** */
 
@@ -347,22 +492,22 @@ int resetSensors(String command){
 
   if (strcmp(command_c, "th")==0 || strcmp(command_c, "ht")==0 || strcmp(command_c, "all")==0 ) {
     si7021.reset();
-    ht_opsOn = si7021.begin();
+    ht_on = si7021.begin();
     exit_code = 0;
   }
   if (strcmp(command_c, "i")==0 || strcmp(command_c, "all")==0 ) {
-    tsl_opsOn = enableTSL();
+    tsl_on = enableTSL();
     exit_code = 0;
   }
 
   if (strcmp(command_c, "b")==0 || strcmp(command_c, "all")==0 ) {
     lipo.reset();
-    batt_opsOn = enableBatt();
+    batt_on = enableBatt();
     exit_code = 0;
   }
 
   // update status
-  sprintf(sensors_status,"Ill: %i, TH: %i, PIR: %i, Batt: %i",tsl_opsOn, ht_opsOn, pir_opsOn, batt_opsOn);
+  sprintf(sensors_status,"Ill: %i, TH: %i, PIR: %i, Batt: %i",tsl_on, ht_on, pir_on, batt_on);
 
   return exit_code;
 }
@@ -410,12 +555,12 @@ int setExposure(String command)
   // setTiming has an error
   if(!setTimingReturn){
     //disable getting illuminance value
-    tsl_opsOn = false;
+    tsl_on = false;
     return -1;
   }
   else {
     // all is good
-    tsl_opsOn = true;
+    tsl_on = true;
     return 0;
   }
 }
@@ -428,29 +573,29 @@ int setActiveCloud(String command)
   const char *command_c = command.c_str();
 
   #ifdef serial_debug
-  Serial.println(command_c);
+  Log.info(command_c);
   #endif
 
-  if (strcmp(command_c,"particle") == 0) { particleOn = true;}
-  else if (strcmp(command_c,"ubidots") == 0) { ubidotsOn = true;}
-  else if (strcmp(command_c,"influx") == 0) { influxdbOn = true;}
+  if (strcmp(command_c,"particle") == 0) { particle_on = true;}
+  else if (strcmp(command_c,"ubidots") == 0) { ubidots_on = true;}
+  else if (strcmp(command_c,"influx") == 0) { influxdb_on = true;}
   else if (strcmp(command_c,"all") == 0) {
-    particleOn = true;
-    ubidotsOn = true;
-    influxdbOn = true;
+    particle_on = true;
+    ubidots_on = true;
+    influxdb_on = true;
   }
   else if (strcmp(command_c,"none") == 0) {
-    particleOn = false;
-    ubidotsOn = false;
-    influxdbOn = false;
+    particle_on = false;
+    ubidots_on = false;
+    influxdb_on = false;
   }
   else {return -1; }// invalid command
 
   // there was sucessful change, update cloud services status
-  sprintf(cloud_settings,"ubidots: %i, particle: %i, influx: %i", ubidotsOn, particleOn, influxdbOn);
+  sprintf(cloud_settings,"ubidots: %i, particle: %i, influx: %i", ubidots_on, particle_on, influxdb_on);
 
   #ifdef serial_debug
-  Serial.println(cloud_settings);
+  Log.info(cloud_settings);
   #endif
 
   return 0;
@@ -476,17 +621,16 @@ int setConditions(String command) {
     EEPROM.get(0,stored_tags);
 
     #ifdef serial_debug
-    Serial.print("\nlocation:");
-    Serial.println(location);
-    Serial.print("\nhumidifier:");
-    Serial.println(humidifier);
+    Log.info("\nlocation:");
+    Log.info(location);
+    Log.info("\nhumidifier:");
+    Log.info(humidifier);
 
-    Serial.print("location from E2:");
-    Serial.println(stored_tags.location);
-    Serial.print("humidifier from E2:");
-    Serial.println(stored_tags.humidifier);
-    Serial.print("version from E2:");
-    Serial.println(stored_tags.version);
+    Log.info("location from E2:");
+    Log.info(stored_tags.location);
+    Log.info("humidifier from E2:");
+    Log.info(stored_tags.humidifier);
+    Log.info("version from E2: %i", stored_tags.version);
 
     #endif
 
@@ -517,23 +661,34 @@ int getConditions(String command) {
   return 0;
 }
 
+
+// set the energy saving mode (one way: once in, can't remotely get out of it)
+int setEnergySaving(String command) {
+  if (!save_mode_on) {
+    save_mode_on = true;
+    save_mode_switched = true;
+    blink_on_switch();
+    return 1;
+  }
+  else return 0;
+}
+
 /* **********************************************************
 *              Send data Cloud Functions
 *  ********************************************************** */
-
 void sendInfluxdb() {
 
   // formatted statement needs to look like this:
   // var_name,tag1=tval1,tag2=tval2 value=value
 
-  if (ht_opsOn){
+  if (ht_on){
     influxdbRequest.body = String::format("temperature,loc=%s,humidifier=%s value=%.2f",location, humidifier, temperatureC);
     influxdbRequest.body.concat(String::format("\nhumidity,loc=%s,humidifier=%s value=%.1f",location, humidifier, humidity));
   }
-  if (ht_opsOn && tsl_opsOn) {
+  if (ht_on && tsl_on) {
     influxdbRequest.body.concat(String("\n"));
   }
-  if(tsl_opsOn) {
+  if(tsl_on) {
     influxdbRequest.body.concat(String::format("illuminance,loc=%s value=%.1f",location, illuminance));
   }
   if (pir_event_cnt > 0) {
@@ -541,11 +696,10 @@ void sendInfluxdb() {
     // reset pir events counter
     pir_event_cnt = 0;
   }
-  if(batt_opsOn) {
+  if(batt_on) {
     influxdbRequest.body.concat(String::format("\nvoltage value=%.2f", voltage));
     influxdbRequest.body.concat(String::format("\nbattery_p value=%.2f", battery_p));
   }
-
 
   //reset response content
   response.body = String("");
@@ -561,70 +715,17 @@ void sendInfluxdb() {
   }
 
   // send server response it to
+  /*
   #ifdef serial_debug
     // let's see this hippo
-    char header[128];
-    Serial.println("request:");
-    sprintf(header,"%s",influxdb_H[0]);
-    Serial.println(header);
-    sprintf(header,"%s",influxdb_H[1]);
-    Serial.println(header);
-    Serial.println(influxdbRequest.body);
-    // let's see server response
-    Serial.println("response:");
-    Serial.println(response.body);
-    Serial.println("status:");
-    Serial.println(response.status);
-  #endif
-}
+    Log.info("request data...");
+    Log.info("header0: %s", influxdb_H[0]);
+    Log.info("header1: %s", influxdb_H[1]);
+    Log.info("request: %s", influxdbRequest.body.c_str());
+    Log.info("response msg: %s", response.body.c_str());
+    Log.info("response status: %i", response.status);
 
-void sendUbidots2() {
-  /* example with two variables:
-  [{"variable": "aaaab5cce67625445fbbbb","value":26.3},
-  {"variable": "aaaaa5ab987f455925bbbbb", "value":43.7}]
+  #endif
   */
-  // build request's body
-  ubidotsRequest.body = String("[");
-  if (ht_opsOn){
-    ubidotsRequest.body.concat(String::format("{\"variable\":\"%s\",\"value\":%.1f},",ubiTempVarId,temperatureC));
-    ubidotsRequest.body.concat(String::format("{\"variable\":\"%s\",\"value\":%.1f}",ubiHumVarId,humidity));
-  }
-  if (ht_opsOn && tsl_opsOn) {
-    ubidotsRequest.body.concat(String(","));
-  }
-  if(tsl_opsOn) {
-    ubidotsRequest.body.concat(String::format("{\"variable\":\"%s\",\"value\":%.1f}",ubiIllVarId,illuminance));
-  }
-  if(batt_opsOn) {
-    ubidotsRequest.body.concat(String::format(",{\"variable\":\"%s\",\"value\":%.2f},",ubiBattV,voltage));
-    ubidotsRequest.body.concat(String::format("{\"variable\":\"%s\",\"value\":%.2f}",ubiBattP,battery_p));
-  }
-  ubidotsRequest.body.concat(String("]"));
 
-  // execute the post request
-  http.post(ubidotsRequest, response, ubiHeaders);
-  dots_sent++;
-
-  // get the server response code
-  if (response.status==200){
-    dots_successful++;
-  }
-  sprintf(ubidots_cnt, "%d/%d", dots_successful,dots_sent);
-
-  // get detailed response
-  #ifdef serial_debug
-    // let's see this hippo
-    char header[128];
-    Serial.println("request:");
-    sprintf(header,"%s",ubiHeaders[0]);
-    Serial.println(header);
-    sprintf(header,"%s",ubiHeaders[1]);
-    Serial.println(header);
-    Serial.println(ubidotsRequest.body);
-    // let's see server response
-    Serial.println("response:");
-    Serial.println(response.body);
-    Serial.println("status:");
-    Serial.println(response.status);
-  #endif
 }
